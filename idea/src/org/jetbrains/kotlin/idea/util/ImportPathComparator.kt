@@ -14,13 +14,13 @@ class ImportPathComparator(
     private val packageTable: KotlinPackageEntryTable
 ) : Comparator<ImportPath> {
     private val comparator = compareBy<ImportPath>(
-        { import -> bestMatchIndex(import) },
+        { import -> bestMatchIndex(import) ?: 0 },
         { import -> import.toString() }
     )
 
     override fun compare(import1: ImportPath, import2: ImportPath): Int = comparator.compare(import1, import2)
 
-    private fun bestMatchIndex(path: ImportPath): Int {
+    private fun bestMatchIndex(path: ImportPath): Int? {
         var bestIndex: Int? = null
         var bestEntryMatch: KotlinPackageEntry? = null
 
@@ -31,6 +31,6 @@ class ImportPathComparator(
             }
         }
 
-        return bestIndex!!
+        return bestIndex
     }
 }
