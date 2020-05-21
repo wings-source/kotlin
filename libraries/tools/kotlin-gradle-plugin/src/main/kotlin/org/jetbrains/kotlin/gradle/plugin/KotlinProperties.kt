@@ -95,6 +95,8 @@ internal class PropertiesProvider private constructor(private val project: Proje
     val ignoreDisabledNativeTargets: Boolean?
         get() = booleanProperty(DisabledNativeTargetsReporter.DISABLE_WARNING_PROPERTY_NAME)
 
+    val ignoreIncorrectNativeDependencies: Boolean?
+        get() = booleanProperty("kotlin.native.ignoreIncorrectDependencies")
     /**
      * Enables parallel tasks execution within a project with Workers API.
      * Does not enable using actual worker proccesses

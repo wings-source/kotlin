@@ -225,7 +225,10 @@ open class KotlinNativeTargetConfigurator<T : KotlinNativeTarget>(
         configureBinaries(target)
         configureFrameworkExport(target)
         configureCInterops(target)
-        warnAboutIncorrectDependencies(target)
+
+        if (PropertiesProvider(target.project).ignoreIncorrectNativeDependencies != true) {
+            warnAboutIncorrectDependencies(target)
+        }
     }
 
     override fun configureArchivesAndComponent(target: T): Unit = with(target.project) {
