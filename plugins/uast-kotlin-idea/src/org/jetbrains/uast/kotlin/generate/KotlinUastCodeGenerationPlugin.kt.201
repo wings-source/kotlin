@@ -77,8 +77,10 @@ class KotlinUastCodeGenerationPlugin : UastCodeGenerationPlugin {
         }?.toUElementOfExpectedTypes(elementType)
     }
 
-    private fun hasBraces(oldPsi: KtBlockExpression) = oldPsi.lBrace != null && oldPsi.rBrace != null
+
 }
+
+private fun hasBraces(oldPsi: KtBlockExpression): Boolean = oldPsi.lBrace != null && oldPsi.rBrace != null
 
 class KotlinUastElementFactory(project: Project) : UastElementFactory {
     private val psiFactory = KtPsiFactory(project)
@@ -155,6 +157,12 @@ class KotlinUastElementFactory(project: Project) : UastElementFactory {
         return psiFactory.createExpression(value.toString()).toUElementOfType<ULiteralExpression>()!!
     }
 
+    private fun KtExpression.ensureBlockExpressionBraces(): KtExpression {
+        if (this !is KtBlockExpression || hasBraces(this)) return this
+        @Suppress("UNCHECKED_CAST")
+        return psiFactory.createBlock(this.statements.joinToString("\n") { it.text })
+    }
+
     @Deprecated("use version with context parameter")
     override fun createIfExpression(condition: UExpression, thenBranch: UExpression, elseBranch: UExpression?): UIfExpression? {
         logger<KotlinUastElementFactory>().error("Please switch caller to the version with a context parameter")
@@ -171,7 +179,7 @@ class KotlinUastElementFactory(project: Project) : UastElementFactory {
         val thenBranchPsi = thenBranch.sourcePsi as? KtExpression ?: return null
         val elseBranchPsi = elseBranch?.sourcePsi as? KtExpression
 
-        return KotlinUIfExpression(psiFactory.createIf(conditionPsi, thenBranchPsi, elseBranchPsi), null)
+        return KotlinUIfExpression(psiFactory.createIf(conditionPsi, thenBranchPsi.ensureBlockExpressionBraces(), elseBranchPsi?.ensureBlockExpressionBraces()), null)
     }
 
     @Deprecated("use version with context parameter")

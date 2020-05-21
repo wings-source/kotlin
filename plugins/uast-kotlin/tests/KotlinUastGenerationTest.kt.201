@@ -96,8 +96,8 @@ class KotlinUastGenerationTest : KotlinLightCodeInsightFixtureTestCase() {
     fun `test simple reference creating from variable`() {
         val context = dummyContextFile()
         val variable = uastElementFactory.createLocalVariable(
-            "a", PsiType.INT, uastElementFactory.createNullLiteral(context), false, context)
-            ?: kfail("cannot create variable")
+            "a", PsiType.INT, uastElementFactory.createNullLiteral(context), false, context
+        ) ?: kfail("cannot create variable")
 
         val reference = uastElementFactory.createSimpleReference(variable, context) ?: kfail("cannot create reference")
         TestCase.assertEquals("a", reference.identifier)
@@ -464,7 +464,6 @@ class KotlinUastGenerationTest : KotlinLightCodeInsightFixtureTestCase() {
     }
 
 
-
     //not implemented (currently we dont perform resolve in code generating)
     fun `ignore method call generation with generics restoring 1 parameter with 1 unused `() {
         val aClassFile = myFixture.configureByText("A.kt",
@@ -494,7 +493,6 @@ class KotlinUastGenerationTest : KotlinLightCodeInsightFixtureTestCase() {
 
         TestCase.assertEquals("A.<String, Object, Integer>kek(\"a\")", methodCall.sourcePsi?.text)
     }
-
 
 
     fun `test method call generation with generics with context`() {
@@ -667,6 +665,93 @@ class KotlinUastGenerationTest : KotlinLightCodeInsightFixtureTestCase() {
 
     }
 
+
+    fun `test converting lambda to if`() {
+
+        val file = myFixture.configureByText(
+            "file.kt", """
+            fun foo(call: (Int) -> String): String = call.invoke(2)
+        
+            fun main() {
+                foo {
+                        println(it)
+                        println(2)
+                        "abc"
+                    }
+                }
+            }
+        """.trimIndent()
+        ) as KtFile
+
+        val uLambdaExpression = file.findUElementByTextFromPsi<UInjectionHost>("\"abc\"")
+            .getParentOfType<ULambdaExpression>() ?: kfail("cant get lambda")
+
+        val oldBlockExpression = uLambdaExpression.body.cast<UBlockExpression>()
+
+        val newLambda = with(uastElementFactory) {
+            createLambdaExpression(
+                listOf(UParameterInfo(null, "it")),
+                createIfExpression(
+                    createBinaryExpression(
+                        createSimpleReference("it", uLambdaExpression.sourcePsi)!!,
+                        createIntLiteral(3, uLambdaExpression.sourcePsi),
+                        UastBinaryOperator.GREATER,
+                        uLambdaExpression.sourcePsi
+                    )!!,
+                    oldBlockExpression,
+                    createReturnExpresion(
+                        createStringLiteralExpression("exit", uLambdaExpression.sourcePsi)!!, true,
+                        uLambdaExpression.sourcePsi
+                    )!!,
+                    uLambdaExpression.sourcePsi
+                )!!,
+                uLambdaExpression.sourcePsi
+            )!!
+        }
+
+        val uLambdaExpression2 = runWriteCommand {
+            uLambdaExpression.replace(newLambda) ?: kfail("cant replace")
+        }
+
+        TestCase.assertEquals(
+            """
+            { it ->
+                    if (it > 3) {
+                        println(it)
+                        println(2)
+                        "abc"
+                    } else return@foo "exit"
+                }
+        """.trimIndent(), uLambdaExpression2.sourcePsi?.parent?.text
+        )
+        TestCase.assertEquals(
+            """
+        ULambdaExpression
+            UParameter (name = it)
+                UAnnotation (fqName = null)
+            UBlockExpression
+                UReturnExpression
+                    UIfExpression
+                        UBinaryExpression (operator = >)
+                            USimpleNameReferenceExpression (identifier = it)
+                            ULiteralExpression (value = 3)
+                        UBlockExpression
+                            UCallExpression (kind = UastCallKind(name='method_call'), argCount = 1))
+                                UIdentifier (Identifier (println))
+                                USimpleNameReferenceExpression (identifier = println, resolvesTo = null)
+                                USimpleNameReferenceExpression (identifier = it)
+                            UCallExpression (kind = UastCallKind(name='method_call'), argCount = 1))
+                                UIdentifier (Identifier (println))
+                                USimpleNameReferenceExpression (identifier = println, resolvesTo = null)
+                                ULiteralExpression (value = 2)
+                            ULiteralExpression (value = "abc")
+                        UReturnExpression
+                            ULiteralExpression (value = "exit")
+        """.trimIndent(), uLambdaExpression2.asRecursiveLogString().trim()
+        )
+
+    }
+
     fun `test removing unnecessary type parameters while replace`() {
         val aClassFile = myFixture.configureByText(
             "A.kt",
@@ -691,7 +776,7 @@ class KotlinUastGenerationTest : KotlinLightCodeInsightFixtureTestCase() {
             context = aClassFile
         ) ?: kfail("cannot create method call")
 
-        val listAssigment =  myFixture.addFileToProject("temp.kt", """
+        val listAssigment = myFixture.addFileToProject("temp.kt", """
             fun foo(kek: List<Int>) {
                 val list: List<Int> = kek
             }
