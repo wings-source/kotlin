@@ -138,7 +138,6 @@ public abstract class AbstractFormatterTest extends KotlinLightIdeaTestCase {
         String originalFileText = FileUtil.loadFile(new File(testFileName + testFileExtension), true);
 
         CodeStyleSettings codeStyleSettings = CodeStyle.getSettings(getProject_());
-        RegistryValue registryValue = Registry.get("kotlin.formatter.allowTrailingCommaOnCallSite");
         try {
             Integer rightMargin = InTextDirectivesUtils.getPrefixedInt(originalFileText, "// RIGHT_MARGIN: ");
             if (rightMargin != null) {
@@ -158,12 +157,11 @@ public abstract class AbstractFormatterTest extends KotlinLightIdeaTestCase {
                 configurator.configureInvertedSettings();
             }
 
-            registryValue.setValue(callSite);
+            codeStyleSettings.getCustomSettings(KotlinCodeStyleSettings.class).ALLOW_TRAILING_COMMA_ON_CALL_SITE = callSite;
             doTextTest(originalFileText, new File(expectedFileNameWithExtension), testFileExtension);
         }
         finally {
             codeStyleSettings.clearCodeStyleSettings();
-            registryValue.resetToDefault();
         }
     }
 }
