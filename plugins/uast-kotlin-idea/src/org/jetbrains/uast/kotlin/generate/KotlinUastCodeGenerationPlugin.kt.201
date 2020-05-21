@@ -23,8 +23,7 @@ import org.jetbrains.kotlin.idea.util.resolveToKotlinType
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi.*
-import org.jetbrains.kotlin.psi.psiUtil.getPossiblyQualifiedCallExpression
-import org.jetbrains.kotlin.psi.psiUtil.quoteIfNeeded
+import org.jetbrains.kotlin.psi.psiUtil.*
 import org.jetbrains.kotlin.resolve.scopes.utils.findClassifier
 import org.jetbrains.kotlin.utils.addToStdlib.cast
 import org.jetbrains.kotlin.utils.addToStdlib.safeAs
@@ -44,7 +43,7 @@ class KotlinUastCodeGenerationPlugin : UastCodeGenerationPlugin {
         KotlinUastElementFactory(project)
 
     override fun <T : UElement> replace(oldElement: UElement, newElement: T, elementType: Class<T>): T? {
-        val oldPsi = oldElement.sourcePsi ?: return null
+        val oldPsi = oldElement.toSourcePsiFakeAware().singleOrNull() ?: return null
         val newPsi = newElement.sourcePsi?.let {
             when {
                 it is KtCallExpression && it.parent is KtQualifiedExpression -> it.parent
@@ -61,6 +60,13 @@ class KotlinUastCodeGenerationPlugin : UastCodeGenerationPlugin {
             oldPsi is KtStringTemplateEntry && newPsi !is KtStringTemplateEntry && newPsi is KtExpression ->
                 oldPsi to psiFactory.createBlockStringTemplateEntry(newPsi)
 
+            oldPsi is KtBlockExpression && newPsi is KtBlockExpression -> {
+                if (!hasBraces(oldPsi) && hasBraces(newPsi)) {
+                    oldPsi to psiFactory.createLambdaExpression("none", newPsi.statements.joinToString("\n") { it.text }).bodyExpression!!
+                } else
+                    oldPsi to newPsi
+            }
+
             else ->
                 oldPsi to newPsi
         }
@@ -70,6 +76,8 @@ class KotlinUastCodeGenerationPlugin : UastCodeGenerationPlugin {
             else -> replaced
         }?.toUElementOfExpectedTypes(elementType)
     }
+
+    private fun hasBraces(oldPsi: KtBlockExpression) = oldPsi.lBrace != null && oldPsi.rBrace != null
 }
 
 class KotlinUastElementFactory(project: Project) : UastElementFactory {
@@ -128,7 +136,7 @@ class KotlinUastElementFactory(project: Project) : UastElementFactory {
 
         val valueArgumentList = methodCall.valueArgumentList
         for (parameter in parameters) {
-            valueArgumentList?.addArgument(psiFactory.createArgument(wrapULiteral(parameter).sourcePsi as? KtExpression))
+            valueArgumentList?.addArgument(psiFactory.createArgument(wrapULiteral(parameter).sourcePsi as KtExpression))
         }
 
         return KotlinUFunctionCallExpression(methodCall, null)
@@ -141,6 +149,10 @@ class KotlinUastElementFactory(project: Project) : UastElementFactory {
 
     /*override*/ fun createNullLiteral(context: PsiElement?): ULiteralExpression {
         return psiFactory.createExpression("null").toUElementOfType<ULiteralExpression>()!!
+    }
+
+    /*override*/ fun createIntLiteral(value: Int, context: PsiElement?): ULiteralExpression {
+        return psiFactory.createExpression(value.toString()).toUElementOfType<ULiteralExpression>()!!
     }
 
     @Deprecated("use version with context parameter")
@@ -201,9 +213,25 @@ class KotlinUastElementFactory(project: Project) : UastElementFactory {
     }
 
     /*override*/ fun createReturnExpresion(expression: UExpression?, inLambda: Boolean, context: PsiElement?): UReturnExpression? {
-        val returnExpression = psiFactory.createExpression("return 1") as KtReturnExpression
-        expression?.sourcePsi?.let { returnExpression.returnedExpression!!.replace(it) }
+        val label = if (inLambda && context != null) getParentLambdaLabelName(context)?.let { "@$it" } ?: "" else ""
+        val returnExpression = psiFactory.createExpression("return$label 1") as KtReturnExpression
+        val sourcePsi = expression?.sourcePsi
+        if (sourcePsi != null) {
+            returnExpression.returnedExpression!!.replace(sourcePsi)
+        } else {
+            returnExpression.returnedExpression?.delete()
+        }
         return KotlinUReturnExpression(returnExpression, null)
+    }
+
+    private fun getParentLambdaLabelName(context: PsiElement): String? {
+        val lambdaExpression = context.getParentOfType<KtLambdaExpression>(false) ?: return null
+        lambdaExpression.parent.safeAs<KtLabeledExpression>()?.let { return it.getLabelName() }
+        val callExpression = lambdaExpression.getStrictParentOfType<KtCallExpression>() ?: return null
+        callExpression.valueArguments.find {
+            it.getArgumentExpression()?.unpackFunctionLiteral(allowParentheses = false) === lambdaExpression
+        } ?: return null
+        return callExpression.getCallNameExpression()?.text
     }
 
     @Deprecated("use version with context parameter")

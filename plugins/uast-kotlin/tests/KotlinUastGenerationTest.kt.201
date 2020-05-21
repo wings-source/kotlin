@@ -11,13 +11,18 @@ import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiType
 import com.intellij.testFramework.LightProjectDescriptor
+import com.intellij.testFramework.UsefulTestCase
 import junit.framework.TestCase
 import org.jetbrains.kotlin.idea.KotlinLanguage
 import org.jetbrains.kotlin.idea.test.KotlinLightCodeInsightFixtureTestCase
 import org.jetbrains.kotlin.idea.test.KotlinWithJdkAndRuntimeLightProjectDescriptor
-import org.jetbrains.kotlin.psi.*
+import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtFunction
+import org.jetbrains.kotlin.psi.KtProperty
+import org.jetbrains.kotlin.psi.KtPsiFactory
 import org.jetbrains.kotlin.utils.addToStdlib.cast
 import org.jetbrains.uast.*
+import org.jetbrains.uast.expressions.UInjectionHost
 import org.jetbrains.uast.generate.UParameterInfo
 import org.jetbrains.uast.generate.UastCodeGenerationPlugin
 import org.jetbrains.uast.generate.refreshed
@@ -215,23 +220,27 @@ class KotlinUastGenerationTest : KotlinLightCodeInsightFixtureTestCase() {
         val file = myFixture.configureByText("dummyFile.kt", "fun foo() { TODO() }") as KtFile
         val ktFunction = file.declarations.single { it.name == "foo" } as KtFunction
         val uMethod = ktFunction.toUElementOfType<UMethod>()!!
-        val result = Ref<UExpression>()
-        WriteCommandAction.runWriteCommandAction(project) {
-            result.set(uMethod.uastBody.cast<UBlockExpression>().expressions.single().replace(this)!!)
+        return runWriteCommand {
+            uMethod.uastBody.cast<UBlockExpression>().expressions.single().replace(this)!!
         }
-        return result.get()
     }
 
     private fun <T : UExpression> T.putIntoVarInitializer(): T {
         val file = myFixture.configureByText("dummyFile.kt", "val foo = TODO()") as KtFile
         val ktFunction = file.declarations.single { it.name == "foo" } as KtProperty
         val uMethod = ktFunction.toUElementOfType<UVariable>()!!
-        val result = Ref<UExpression>()
-        WriteCommandAction.runWriteCommandAction(project) {
-            result.set(generatePlugin.replace(uMethod.uastInitializer!!, this, UExpression::class.java)!!)
+        return runWriteCommand {
+            @Suppress("UNCHECKED_CAST")
+            generatePlugin.replace(uMethod.uastInitializer!!, this, UExpression::class.java) as T
         }
-        @Suppress("UNCHECKED_CAST")
-        return result.get() as T
+    }
+
+    private fun <T : UExpression> runWriteCommand(uExpression: () -> T): T {
+        val result = Ref<T>()
+        WriteCommandAction.runWriteCommandAction(project) {
+            result.set(uExpression())
+        }
+        return result.get()
     }
 
     fun `test lambda expression with explicit types`() {
@@ -523,10 +532,140 @@ class KotlinUastGenerationTest : KotlinLightCodeInsightFixtureTestCase() {
             UCallExpression (kind = UastCallKind(name='method_call'), argCount = 0))
                 UIdentifier (Identifier (method))
                 USimpleNameReferenceExpression (identifier = <anonymous class>, resolvesTo = null)
-        """.trimIndent(), callExpression.uastParent?.asRecursiveLogString()?.trim())
+        """.trimIndent(), callExpression.uastParent?.asRecursiveLogString()?.trim()
+        )
 
     }
 
+
+    fun `test replace lambda implicit return value`() {
+
+        val file = myFixture.configureByText(
+            "file.kt", """
+            fun main(){
+                val a: (Int) -> String = {
+                    println(it)
+                    println(2)
+                    "abc"
+                }
+            }
+        """.trimIndent()
+        ) as KtFile
+
+        val uLambdaExpression = file.findUElementByTextFromPsi<UInjectionHost>("\"abc\"")
+            .getParentOfType<ULambdaExpression>() ?: kfail("cant get lambda")
+
+        val expressions = uLambdaExpression.body.cast<UBlockExpression>().expressions
+        UsefulTestCase.assertSize(3, expressions)
+
+        val uReturnExpression = expressions.last() as UReturnExpression
+        val newStringLiteral = uastElementFactory.createStringLiteralExpression("def", file) ?: kfail("cannot create method call")
+
+        val defReturn = runWriteCommand { uReturnExpression.replace(newStringLiteral) ?: kfail("cant replace") }
+        val uLambdaExpression2 = defReturn.getParentOfType<ULambdaExpression>() ?: kfail("cant get lambda")
+
+        TestCase.assertEquals("{\n        println(it)\n        println(2)\n        \"def\"\n    }", uLambdaExpression2.sourcePsi?.text)
+        TestCase.assertEquals(
+            """
+        ULambdaExpression
+            UParameter (name = it)
+            UBlockExpression
+                UCallExpression (kind = UastCallKind(name='method_call'), argCount = 1))
+                    UIdentifier (Identifier (println))
+                    USimpleNameReferenceExpression (identifier = println, resolvesTo = null)
+                    USimpleNameReferenceExpression (identifier = it)
+                UCallExpression (kind = UastCallKind(name='method_call'), argCount = 1))
+                    UIdentifier (Identifier (println))
+                    USimpleNameReferenceExpression (identifier = println, resolvesTo = null)
+                    ULiteralExpression (value = 2)
+                UReturnExpression
+                    ULiteralExpression (value = "def")
+        """.trimIndent(), uLambdaExpression2.asRecursiveLogString().trim()
+        )
+
+    }
+
+    fun `test add intermediate returns to lambda`() {
+
+        val file = myFixture.configureByText(
+            "file.kt", """
+            fun main(){
+                val a: (Int) -> String = lname@{
+                    println(it)
+                    println(2)
+                    "abc"
+                }
+            }
+        """.trimIndent()
+        ) as KtFile
+
+        val uLambdaExpression = file.findUElementByTextFromPsi<UInjectionHost>("\"abc\"")
+            .getParentOfType<ULambdaExpression>() ?: kfail("cant get lambda")
+
+        val oldBlockExpression = uLambdaExpression.body.cast<UBlockExpression>()
+        UsefulTestCase.assertSize(3, oldBlockExpression.expressions)
+
+        val conditionalExit = with(uastElementFactory) {
+            createIfExpression(
+                createBinaryExpression(
+                    createSimpleReference("it", uLambdaExpression.sourcePsi)!!,
+                    createIntLiteral(3, uLambdaExpression.sourcePsi),
+                    UastBinaryOperator.GREATER,
+                    uLambdaExpression.sourcePsi
+                )!!,
+                createReturnExpresion(
+                    createStringLiteralExpression("exit", uLambdaExpression.sourcePsi)!!, true,
+                    uLambdaExpression.sourcePsi
+                )!!,
+                null,
+                uLambdaExpression.sourcePsi
+            )!!
+        }
+
+        val newBlockExpression = uastElementFactory.createBlockExpression(
+            listOf(conditionalExit) + oldBlockExpression.expressions,
+            uLambdaExpression.sourcePsi
+        )!!
+
+        val uLambdaExpression2 = runWriteCommand {
+            oldBlockExpression.replace(newBlockExpression) ?: kfail("cant replace")
+        }.getParentOfType<ULambdaExpression>() ?: kfail("cant get lambda")
+
+        TestCase.assertEquals(
+            """
+            lname@{
+                    if (it > 3) return@lname "exit"
+                    println(it)
+                    println(2)
+                    "abc"
+                }
+        """.trimIndent(), uLambdaExpression2.sourcePsi?.parent?.text
+        )
+        TestCase.assertEquals(
+            """
+        ULambdaExpression
+            UParameter (name = it)
+            UBlockExpression
+                UIfExpression
+                    UBinaryExpression (operator = >)
+                        USimpleNameReferenceExpression (identifier = it)
+                        ULiteralExpression (value = 3)
+                    UReturnExpression
+                        ULiteralExpression (value = "exit")
+                UCallExpression (kind = UastCallKind(name='method_call'), argCount = 1))
+                    UIdentifier (Identifier (println))
+                    USimpleNameReferenceExpression (identifier = println, resolvesTo = null)
+                    USimpleNameReferenceExpression (identifier = it)
+                UCallExpression (kind = UastCallKind(name='method_call'), argCount = 1))
+                    UIdentifier (Identifier (println))
+                    USimpleNameReferenceExpression (identifier = println, resolvesTo = null)
+                    ULiteralExpression (value = 2)
+                UReturnExpression
+                    ULiteralExpression (value = "abc")
+        """.trimIndent(), uLambdaExpression2.asRecursiveLogString().trim()
+        )
+
+    }
 
     fun `test removing unnecessary type parameters while replace`() {
         val aClassFile = myFixture.configureByText(
