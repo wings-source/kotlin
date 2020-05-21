@@ -1,0 +1,24 @@
+{
+  "3": {
+    "neg": {
+      "1": [
+        {
+          "specVersion": "0.1-401",
+          "casesNumber": 1,
+          "description": "the case of a call with a callable reference as a not parameter",
+          "unexpectedBehaviour": false
+        }
+      ]
+    },
+    "pos": {
+      "1": [
+        {
+          "specVersion": "0.1-401",
+          "casesNumber": 2,
+          "description": "the case of a call with a callable reference as a not parameter",
+          "unexpectedBehaviour": false
+        }
+      ]
+    }
+  }
+}
